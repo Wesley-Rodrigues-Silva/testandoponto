@@ -1,119 +1,113 @@
-import pandas as pd
-import win32com.client
 import os
+import win32com.client as win32
+import pandas as pd
+from datetime import datetime
+from collections import defaultdict
 
-# 🚀 Mensagem de depuração para garantir que o código atualizado está rodando
-print("\n🚀 ESTE É O CÓDIGO ATUALIZADO RODANDO! 🚀\n")
+# Caminhos
+planilha_caminho = r"C:\Users\trank\Desktop\Pasta1.xlsx"
+historico_path = r"historico_notificacoes.xlsx"
 
-# 🛠 Caminhos corretos para os arquivos
-planilha_mensal = r"C:\Users\trank\Desktop\Pasta1.xlsx"
-historico_notificacoes = r"C:\Users\trank\Desktop\historico.xlsx"
-
-# 📌 Depuração: Exibir os caminhos usados
-print("Executando o script...")
-print(f"Verificando se a planilha mensal existe: {planilha_mensal}")
-
-# 🔍 Verificar se o arquivo da planilha existe
-if not os.path.exists(planilha_mensal):
-    print(f"❌ ERRO: Arquivo {planilha_mensal} não encontrado!")
+# Verifica se a planilha existe
+print(f"Verificando se a planilha mensal existe: {planilha_caminho}")
+if not os.path.exists(planilha_caminho):
+    print("❌ ERRO: Planilha não encontrada.")
     exit()
 
-# 🔍 Verificar se o histórico de notificações existe
-if os.path.exists(historico_notificacoes):
-    historico_df = pd.read_excel(historico_notificacoes, engine="openpyxl")
+# Lê os dados da planilha principal
+df = pd.read_excel(planilha_caminho)
+
+# Mostra as colunas disponíveis para evitar futuros erros
+print("📊 Colunas encontradas na planilha:", df.columns.tolist())
+
+# Lê o histórico ou cria um novo DataFrame se não existir
+if os.path.exists(historico_path):
+    historico_df = pd.read_excel(historico_path)
 else:
-    historico_df = pd.DataFrame(columns=["Nome", "Email", "Notificacoes", "Ultimas Datas"])
+    historico_df = pd.DataFrame(columns=["Nome", "Email", "Data"])
 
-# 📥 Carregar os dados da planilha mensal
-mensal_df = pd.read_excel(planilha_mensal, engine="openpyxl")
+# Agrupa as datas esquecidas por funcionário
+funcionarios = defaultdict(list)
 
-# 📌 Converter datas para o formato brasileiro (se a coluna existir)
-if "Data" in mensal_df.columns:
-    mensal_df["Data"] = pd.to_datetime(mensal_df["Data"], errors='coerce').dt.strftime('%d/%m/%Y')
-else:
-    print("❌ ERRO: A coluna 'Data' não foi encontrada na planilha.")
-    exit()
+for _, row in df.iterrows():
+    nome = row['Nome']
+    email = row['Email']
+    data = row['Data']
+    funcionarios[(nome.strip().lower(), email.strip().lower())].append(str(data))
 
-# 📌 Criar um dicionário para armazenar notificações
-notificacoes = {}
-for _, row in mensal_df.iterrows():
-    nome, email, data = row["Nome"], row["Email"], row["Data"]
-    if email in notificacoes:
-        notificacoes[email]["datas"].append(data)
-    else:
-        notificacoes[email] = {"nome": nome, "datas": [data]}
+# Conecta ao Outlook
+outlook = win32.Dispatch("Outlook.Application")
+namespace = outlook.GetNamespace("MAPI")
 
-# 📧 Inicializar o Outlook para envio de e-mails
-try:
-    outlook = win32com.client.Dispatch("Outlook.Application")
-    print("📧 Conexão com o Outlook estabelecida com sucesso!")
-except Exception as e:
-    print(f"❌ ERRO ao conectar ao Outlook: {e}")
-    exit()
+# Lista as contas disponíveis
+print("📬 Contas disponíveis no Outlook:")
+for i in range(namespace.Accounts.Count):
+    conta = namespace.Accounts.Item(i + 1)
+    print(f"- {conta.DisplayName} | {conta.SmtpAddress}")
 
-# 📌 Selecionar a conta específica para envio
-conta = None
-email_envio = "fisioap@outlook.com.br"  # Altere para o e-mail correto
+# Define o e-mail de envio
+email_envio = "fisioap@outlook.com.br"
+conta_encontrada = None
 
-for acc in outlook.Session.Accounts:
-    if acc.SmtpAddress.lower() == email_envio.lower():
-        conta = acc
+for i in range(namespace.Accounts.Count):
+    conta = namespace.Accounts.Item(i + 1)
+    if conta.SmtpAddress.lower() == email_envio.lower():
+        conta_encontrada = conta
         break
 
-if not conta:
+if not conta_encontrada:
     print(f"❌ ERRO: Conta de e-mail '{email_envio}' não encontrada no Outlook.")
     exit()
 
-# 📤 Iterar sobre os funcionários a serem notificados
-for email, info in notificacoes.items():
-    nome = info["nome"]
-    datas = info["datas"]
-    
-    # 📌 Verificar quantas notificações o funcionário já recebeu
-    notificacoes_anteriores = historico_df.loc[historico_df["Email"] == email, "Notificacoes"].values
-    num_notificacoes = int(notificacoes_anteriores[0]) + 1 if len(notificacoes_anteriores) > 0 else 1
+print("📧 Conexão com o Outlook estabelecida com sucesso!")
 
-    # 📌 Mensagem de debug para verificar os valores antes do envio
-    print(f"DEBUG: Nome: {nome} | Email: {email} | Notificações Anteriores: {notificacoes_anteriores} | Notificação Atual: {num_notificacoes}")
+# Envia os e-mails
+for (nome, email), datas in funcionarios.items():
+    # Verifica histórico
+    historico = historico_df[(historico_df['Email'].str.lower() == email)]
+    notificacoes_anteriores = historico.shape[0]
+    notificacao_atual = notificacoes_anteriores + 1
 
-    # 📌 Criar o corpo do e-mail
-    texto_datas = f"você esqueceu de registrar seu ponto na seguinte data: {datas[0]}" if len(datas) == 1 \
-        else f"você esqueceu de registrar seu ponto nas seguintes datas: {', '.join(datas)}"
-    mensagem = (f"Prezado(a) {nome},\n\n"
-                f"Identificamos que {texto_datas}.\n\n"
-                "Atenciosamente,\nRecursos Humanos")
+    print(f"DEBUG: Nome: {nome} | Email: {email} | Notificações Anteriores: [{notificacoes_anteriores}] | Notificação Atual: {notificacao_atual}")
 
-    # 📌 Definir o assunto do e-mail corretamente
-    assunto_email = f"{num_notificacoes}ª Notificação de Esquecimento"
-    print(f"DEBUG: Assunto do e-mail antes do envio -> {assunto_email}")  # Verifica se o assunto está correto
+    # Gera assunto com número ordinal
+    ordinais = {1: "1ª", 2: "2ª", 3: "3ª", 4: "4ª", 5: "5ª", 6: "6ª", 7: "7ª", 8: "8ª", 9: "9ª", 10: "10ª"}
+    prefixo = ordinais.get(notificacao_atual, f"{notificacao_atual}ª")
+    assunto = f"{prefixo} Notificação de Esquecimento"
+    print(f"DEBUG: Assunto do e-mail antes do envio -> {assunto}")
 
-    # 📧 Criar e enviar o e-mail via Outlook
+    corpo = f"""
+Olá {nome.title()},
+
+Identificamos que você esqueceu de registrar o ponto nas seguintes datas:
+
+{chr(10).join(f"- {d}" for d in datas)}
+
+Essa é sua {prefixo.lower()} notificação sobre esse tipo de ocorrência. Por favor, redobre a atenção para evitar impactos no controle de frequência.
+
+Atenciosamente,
+Recursos Humanos
+"""
+
+    # Cria o e-mail
+    mail = outlook.CreateItem(0)
+    mail.To = email
+    mail.Subject = assunto
+    mail.Body = corpo
+    mail._oleobj_.Invoke(*(64209, 0, 8, 0, conta_encontrada))  # Define a conta de envio
+
     try:
-        mail = outlook.CreateItem(0)
-        mail.SendUsingAccount = conta  # Definir a conta correta para envio
-        mail.To = email
-        mail.CC = "chefia@exemplo.com"  # E-mail da chefia (adicionar no CC)
-        mail.Subject = assunto_email  # Aplicar o assunto corretamente
-        mail.Body = mensagem  
+        mail.Send()
+        print(f"✅ Conta de envio definida como: {conta_encontrada.SmtpAddress}")
+        print(f"✅ E-mail enviado para {email}")
 
-        # Exibir o e-mail antes de enviar para depuração
-        mail.Display()  # Abrir o e-mail para depuração
-        
-        # Enviar o e-mail (remova ou comente se quiser apenas visualizar o e-mail)
-        # mail.Send()  
-        print(f"✅ E-mail preparado para {email} com o assunto: {mail.Subject}")
+        # Atualiza histórico
+        for d in datas:
+            historico_df = pd.concat([historico_df, pd.DataFrame([{'Nome': nome, 'Email': email, 'Data': d}])], ignore_index=True)
+
     except Exception as e:
         print(f"❌ ERRO ao enviar e-mail para {email}: {e}")
-    
-    # 📌 Atualizar o histórico de notificações
-    historico_df = historico_df[historico_df["Email"] != email]
-    historico_df = pd.concat([historico_df, pd.DataFrame([{
-        "Nome": nome,
-        "Email": email,
-        "Notificacoes": num_notificacoes,
-        "Ultimas Datas": ', '.join(datas)
-    }])], ignore_index=True)
 
-# 💾 Salvar o histórico atualizado
-historico_df.to_excel(historico_notificacoes, index=False, engine="openpyxl")
+# Salva o histórico
+historico_df.to_excel(historico_path, index=False)
 print("✅ Notificações enviadas e histórico atualizado!")
